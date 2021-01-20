@@ -1,6 +1,7 @@
 from collections.abc import Mapping
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from operator import itemgetter
+from typing import Any, Callable, Optional, Union
 import json, logging, time, threading, warnings
 import queue
 
@@ -55,55 +56,44 @@ class CloudWatchLogHandler(logging.Handler):
     http://docs.aws.amazon.com/AmazonCloudWatch/latest/DeveloperGuide/WhatIsCloudWatchLogs.html for more information.
 
     :param log_group: Name of the CloudWatch log group to write logs to. By default, the name of this module is used.
-    :type log_group: String
     :param stream_name:
         Name of the CloudWatch log stream to write logs to. By default, the name of the logger that processed the
         message is used. Accepts a format string parameter of {logger_name}, as well as {strftime:%m-%d-%y}, where
         any strftime string can be used to include the current UTC datetime in the stream name.
-    :type stream_name: String
     :param use_queues:
         If **True**, logs will be queued on a per-stream basis and sent in batches. To manage the queues, a queue
         handler thread will be spawned.
-    :type queue: Boolean
     :param send_interval:
         Maximum time (in seconds, or a timedelta) to hold messages in queue before sending a batch.
-    :type send_interval: Integer
     :param max_batch_size:
         Maximum size (in bytes) of the queue before sending a batch. From CloudWatch Logs documentation: **The maximum
         batch size is 1,048,576 bytes, and this size is calculated as the sum of all event messages in UTF-8, plus 26
         bytes for each log event.**
-    :type max_batch_size: Integer
     :param max_batch_count:
         Maximum number of messages in the queue before sending a batch. From CloudWatch Logs documentation: **The
         maximum number of log events in a batch is 10,000.**
-    :type max_batch_count: Integer
     :param boto3_session:
         Session object to create boto3 `logs` clients. Accepts AWS credential, profile_name, and region_name from its
         constructor.
-    :type boto3_session: boto3.session.Session
+    :param boto3_profile_name:
+        Profile name to create a `boto3.session.Session` with.
     :param create_log_group:
         Create CloudWatch Logs log group if it does not exist.  **True** by default.
-    :type create_log_group: Boolean
     :param log_group_retention_days:
         Sets the retention policy of the log group in days.  **None** by default.
-    :type log_group_retention_days: Integer
     :param create_log_stream:
         Create CloudWatch Logs log stream if it does not exist.  **True** by default.
-    :type create_log_stream: Boolean
     :param json_serialize_default:
         The 'default' function to use when serializing dictionaries as JSON. Refer to the Python standard library
         documentation on 'json' for more explanation about the 'default' parameter.
-        https://docs.python.org/3/library/json.html#json.dump
-        https://docs.python.org/2/library/json.html#json.dump
-    :type json_serialize_default: Function
+
+        See: https://docs.python.org/3/library/json.html#json.dump
     :param max_message_size:
         Maximum size (in bytes) of a single message.
-    :type max_message_size: Integer
     :param endpoint_url:
-        The complete URL to use for the constructed client. Normally, botocore will automatically construct
-        the appropriate URL to use when communicating with a service. You can specify a complete URL
-        (including the "http/https" scheme) to override this behavior.
-    :type endpoint_url: String
+        The complete URL to use for the constructed client. Normally, botocore will automatically construct the
+        appropriate URL to use when communicating with a service. You can specify a complete URL (including the
+        "http/https" scheme) to override this behavior.
     """
     END = 1
     FLUSH = 2
@@ -121,16 +111,21 @@ class CloudWatchLogHandler(logging.Handler):
 
         return boto3
 
-    def __init__(self, log_group=__name__, stream_name=None, use_queues=True, send_interval=60,
-                 max_batch_size=1024 * 1024, max_batch_count=10000, boto3_session=None,
-                 boto3_profile_name=None, create_log_group=True, log_group_retention_days=None,
-                 create_log_stream=True, json_serialize_default=None, max_message_size=256 * 1024,
-                 endpoint_url=None, *args, **kwargs):
+    def __init__(self, log_group: str = __name__, stream_name: str = None, use_queues: bool = True,
+                 send_interval: Union[int, timedelta] = 60, max_batch_size: int = 1024 * 1024,
+                 max_batch_count: int = 10000, boto3_session: Optional[boto3.session.Session] = None,
+                 boto3_profile_name: str = None, create_log_group: bool = True,
+                 log_group_retention_days: Optional[int]=None,
+                 create_log_stream: bool = True, json_serialize_default: Callable[[Any], Any] = None,
+                 max_message_size: int = 256 * 1024, endpoint_url: str = None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.log_group = log_group
         self.stream_name = stream_name
         self.use_queues = use_queues
-        self.send_interval = send_interval
+        if isinstance(send_interval, timedelta):
+            self.send_interval = send_interval.total_seconds()
+        else:
+            self.send_interval = send_interval
         self.json_serialize_default = json_serialize_default or _json_serialize_default
         self.max_batch_size = max_batch_size
         self.max_batch_count = max_batch_count
@@ -196,13 +191,13 @@ class CloudWatchLogHandler(logging.Handler):
                         finally:
                             self.creating_log_stream = False
                 else:
-                    warnings.warn("Failed to deliver logs: {}".format(e), WatchtowerWarning)
+                    warnings.warn(f"Failed to deliver logs: {e}", WatchtowerWarning)
             except Exception as e:
-                warnings.warn("Failed to deliver logs: {}".format(e), WatchtowerWarning)
+                warnings.warn(f"Failed to deliver logs: {e}", WatchtowerWarning)
 
         # response can be None only when all retries have been exhausted
         if response is None or "rejectedLogEventsInfo" in response:
-            warnings.warn("Failed to deliver logs: {}".format(response), WatchtowerWarning)
+            warnings.warn(f"Failed to deliver logs: {response}", WatchtowerWarning)
         elif "nextSequenceToken" in response:
             # According to https://github.com/kislyuk/watchtower/issues/134, nextSequenceToken may sometimes be absent
             # from the response
